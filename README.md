@@ -2,6 +2,10 @@
 
 A Windows taskbar battery monitor for wireless mice, headsets, keyboards and controllers.
 
+![Four battery rings on the Windows 11 taskbar showing normal, charging, low and last-known battery levels](docs/taskbar-rings.png)
+
+*Sample battery levels captured from the Windows taskbar at 125% scaling.*
+
 Wireless Battery Rings is an unofficial fork of **Wireless Battery** by [krisgfx9](https://github.com/krisgfx9) and the original contributors. It is based on upstream **v1.0.4**, commit `f2f075e`, recovered from the [notjiccu mirror](https://github.com/notjiccu/wireless-device-battery-monitor/tree/v1.0.4). The original author and contributor credits are preserved in the Git history and below.
 
 Modified in this fork on **2026-11-23**. The Windows taskbar widget shows a charge ring around each device icon. The strip stays anchored beside the notification area as its width changes. This version also includes an MSVC build option.
