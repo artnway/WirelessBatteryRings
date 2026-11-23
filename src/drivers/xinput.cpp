@@ -63,7 +63,11 @@ int PollWgi(PollContext& ctx) {
         IBatteryReport* report = nullptr;
         if (vid == 0x045E && SUCCEEDED(raw->QueryInterface(__uuidof(IGameControllerBatteryInfo), (void**)&info)) && info &&
             SUCCEEDED(info->TryGetBatteryReport(&report)) && report) {
+#ifdef _MSC_VER
+            __FIReference_1_int *rem = nullptr, *full = nullptr;
+#else
             __FIReference_1_INT32 *rem = nullptr, *full = nullptr;
+#endif
             report->get_RemainingCapacityInMilliwattHours(&rem);
             report->get_FullChargeCapacityInMilliwattHours(&full);
             INT32 r = 0, f = 0;

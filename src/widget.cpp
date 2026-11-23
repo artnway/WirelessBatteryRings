@@ -2,25 +2,33 @@
 
 #include <commctrl.h>
 #include <algorithm>
+#include <cmath>
+#include <windowsx.h>
 
 namespace {
 
 HWND g_wnd, g_taskbar, g_tip, g_notify, g_rebar;
 UINT g_clickMsg;
-bool g_light, g_hover;
+bool g_light;
+int g_hoveredItem = -1;
 std::vector<WidgetItem> g_items;
 std::wstring g_tipText;
 RECT g_lastTray{}, g_lastBar{};
 int g_lastW = -1, g_lastDpi = 0;
 SIZE g_size{};
 
+constexpr int kCellDip = 42;
+constexpr int kRingDip = 34;
+constexpr int kRingPaddingDip = 6;
 const wchar_t* kClass = L"WirelessBatteryWidget";
 
 int Dpi() {
     UINT d = g_taskbar ? GetDpiForWindow(g_taskbar) : 0;
     return d ? (int)d : 96;
 }
-int Px(int v) { return MulDiv(v, Dpi(), 96); }
+int Px(int v) { return MulDiv(v, Dpi(), USER_DEFAULT_SCREEN_DPI); }
+int CellSize(int barHeight) { return std::min(Px(kCellDip), barHeight - Px(4)); }
+int RingDiameter(int cell) { return std::min(Px(kRingDip), cell - Px(kRingPaddingDip)); }
 
 wchar_t Glyph(DeviceKind k, bool bluetooth) {
     switch (k) {
@@ -31,7 +39,6 @@ wchar_t Glyph(DeviceKind k, bool bluetooth) {
         default:                   return bluetooth ? 0xE702 : 0xE772;  // Bluetooth / Devices
     }
 }
-constexpr wchar_t kBolt = 0xE945;            // LightningBolt
 constexpr wchar_t kBatteryUnknown = 0xE996;  // shown when there is nothing to display
 
 // Creates a font, falling back when the preferred face is not installed (GDI would silently substitute).
@@ -51,46 +58,31 @@ HFONT MakeFont(int px, int weight, const wchar_t* face, const wchar_t* fallback)
     return nullptr;
 }
 
-// Grayscale coverage mask of a string, cropped to its ink bounds.
-struct Mask {
-    int w = 0, h = 0;
-    std::vector<BYTE> a;
-};
-
-Mask RenderMask(const std::wstring& s, HFONT font) {
-    Mask m;
+std::vector<BYTE> RenderGlyph(wchar_t glyph, HFONT font, int cell) {
+    std::vector<BYTE> mask((size_t)cell * cell);
     HDC dc = CreateCompatibleDC(nullptr);
-    HGDIOBJ of = SelectObject(dc, font);
-    SIZE sz;
-    GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &sz);
-    int W = sz.cx + 8, H = sz.cy + 8;
-    BITMAPINFO bi{};
-    bi.bmiHeader = { sizeof(BITMAPINFOHEADER), W, -H, 1, 32, BI_RGB };
+    if (!dc) return mask;
+    BITMAPINFO info{};
+    info.bmiHeader = { sizeof(BITMAPINFOHEADER), cell, -cell, 1, 32, BI_RGB };
     void* bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HGDIOBJ ob = SelectObject(dc, bmp);
-    memset(bits, 0, (size_t)W * H * 4);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    TextOutW(dc, 4, 4, s.c_str(), (int)s.size());
-    GdiFlush();
-    auto* p = static_cast<DWORD*>(bits);
-    int x0 = W, y0 = H, x1 = -1, y1 = -1;
-    for (int y = 0; y < H; y++)
-        for (int x = 0; x < W; x++)
-            if (p[y * W + x] & 0xFF) { x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
-    if (x1 >= 0) {
-        m.w = x1 - x0 + 1;
-        m.h = y1 - y0 + 1;
-        m.a.resize((size_t)m.w * m.h);
-        for (int y = 0; y < m.h; y++)
-            for (int x = 0; x < m.w; x++) m.a[y * m.w + x] = (BYTE)(p[(y0 + y) * W + x0 + x] & 0xFF);
+    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (bitmap) {
+        HGDIOBJ prevBitmap = SelectObject(dc, bitmap);
+        HGDIOBJ prevFont = font ? SelectObject(dc, font) : nullptr;
+        PatBlt(dc, 0, 0, cell, cell, BLACKNESS);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(255, 255, 255));
+        RECT bounds{0, 0, cell, cell};
+        DrawTextW(dc, &glyph, 1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        GdiFlush();
+        const auto* pixels = static_cast<const DWORD*>(bits);
+        std::transform(pixels, pixels + mask.size(), mask.begin(), [](DWORD pixel) { return (BYTE)(pixel & 0xff); });
+        if (prevFont) SelectObject(dc, prevFont);
+        SelectObject(dc, prevBitmap);
+        DeleteObject(bitmap);
     }
-    SelectObject(dc, ob);
-    SelectObject(dc, of);
-    DeleteObject(bmp);
     DeleteDC(dc);
-    return m;
+    return mask;
 }
 
 struct Rgb { int r, g, b; };
@@ -110,73 +102,71 @@ struct Canvas {
         int ob = c.b * a / 255 + db * inv / 255;
         px[y * w + x] = ((DWORD)oa << 24) | ((DWORD)orr << 16) | ((DWORD)og << 8) | (DWORD)ob;
     }
-    void Draw(const Mask& m, int x, int y, Rgb c, int alpha) {
-        for (int j = 0; j < m.h; j++)
-            for (int i = 0; i < m.w; i++) Blend(x + i, y + j, c, m.a[j * m.w + i] * alpha / 255);
-    }
 };
 
-struct Piece { Mask m; Rgb color; int alpha; int gapAfter; };
+void DrawBadge(Canvas& cv, int x, const std::vector<BYTE>& glyph, const WidgetItem& item, bool hovered) {
+    const auto fg = g_light ? Rgb{0, 0, 0} : Rgb{255, 255, 255};
+    const auto red = g_light ? Rgb{196, 30, 40} : Rgb{255, 90, 90};
+    const auto charge = g_light ? Rgb{0, 120, 212} : Rgb{96, 205, 255};
+    const auto accent = item.charging ? charge : item.low ? red : fg;
+    const int opacity = item.dim ? 120 : 255;
+    const int cell = cv.h;
+    const int diameter = RingDiameter(cell);
+    const double halfStroke = (double)Dpi() / USER_DEFAULT_SCREEN_DPI;
+    const double radius = diameter / 2.0 - halfStroke;
+    const double hoverRadius = (diameter + Px(kRingPaddingDip)) / 2.0;
+    if (radius <= 0) return;
+    constexpr double turn = 6.283185307179586;
+    const int level = std::clamp(item.percent, 0, 100);
+    const double arc = turn * level / 100.0;
+    const auto coverage = [](double distance) { return std::clamp(0.5 - distance, 0.0, 1.0); };
+    for (int row = 0; row < cell; ++row) {
+        const double dy = row + 0.5 - cell / 2.0;
+        for (int col = 0; col < cell; ++col) {
+            const double dx = col + 0.5 - cell / 2.0;
+            const double distance = std::hypot(dx, dy);
+            const int hover = hovered ? (int)std::lround(21 * coverage(distance - hoverRadius)) : 0;
+            cv.Blend(x + col, row, fg, 1 + hover);
 
-std::vector<Piece> Layout(int& width) {
-    Rgb fg = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
-    Rgb red = g_light ? Rgb{ 196, 30, 40 } : Rgb{ 255, 90, 90 };
-    Rgb charge = g_light ? Rgb{ 0, 120, 212 } : Rgb{ 96, 205, 255 };
-    HFONT icons = MakeFont(Px(16), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT bolt = MakeFont(Px(11), FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
-    HFONT text = MakeFont(Px(13), FW_NORMAL, L"Segoe UI Variable Text", L"Segoe UI");
-
-    std::vector<Piece> out;
-    if (g_items.empty()) out.push_back({ RenderMask(std::wstring(1, kBatteryUnknown), icons), fg, 110, 0 });
-    for (size_t i = 0; i < g_items.size(); i++) {
-        const auto& it = g_items[i];
-        int a = it.dim ? 120 : 255;
-        Rgb tc = it.low ? red : fg;
-        out.push_back({ RenderMask(std::wstring(1, Glyph(it.kind, it.bluetooth)), icons), fg, a, Px(5) });
-        std::wstring t = !it.text.empty() ? it.text : it.percent >= 0 ? std::to_wstring(it.percent) + L"%" : L"?";
-        out.push_back({ RenderMask(t, text), tc, a, it.charging ? Px(2) : 0 });
-        if (it.charging) out.push_back({ RenderMask(std::wstring(1, kBolt), bolt), charge, a, 0 });
-        out.back().gapAfter = i + 1 < g_items.size() ? Px(14) : 0;
+            const double ring = coverage(std::abs(distance - radius) - halfStroke);
+            if (ring > 0) {
+                double angle = std::atan2(dx, -dy);
+                if (angle < 0) angle += turn;
+                const double edge = angle <= arc ? std::min(angle, arc - angle)
+                    : -std::min(angle - arc, turn - angle);
+                const double fill = level == 100 ? 1.0 : level == 0 ? 0.0 : coverage(-edge * radius);
+                const double alpha = 60 + 195 * fill;
+                const auto tint = [&](int base, int filled) {
+                    return (int)std::lround(base + (filled - base) * 255 * fill / alpha);
+                };
+                const Rgb color{tint(fg.r, accent.r), tint(fg.g, accent.g), tint(fg.b, accent.b)};
+                cv.Blend(x + col, row, color, (int)(ring * alpha * opacity / 255));
+            }
+            cv.Blend(x + col, row, item.charging && !level ? charge : fg, glyph[row * cell + col] * opacity / 255);
+        }
     }
-    DeleteObject(icons);
-    DeleteObject(bolt);
-    DeleteObject(text);
-
-    width = Px(8) * 2;
-    for (auto& p : out) width += p.m.w + p.gapAfter;
-    return out;
 }
 
 void Paint() {
     if (!g_wnd) return;
-    RECT bar;
-    GetClientRect(g_taskbar, &bar);
-    int H = bar.bottom - bar.top;
-    int W = 0;
-    auto pieces = Layout(W);
-    if (W <= 0 || H <= 0) return;
+    RECT bar{};
+    if (!GetClientRect(g_taskbar, &bar)) return;
+    const int H = CellSize(bar.bottom - bar.top);
+    if (RingDiameter(H) <= 0) return;
+    const int W = H * (int)std::max(size_t{1}, g_items.size());
     Canvas cv(W, H);
-
-    // Nearly transparent background so the whole strip receives mouse input,
-    // plus a rounded hover highlight like the system tray icons have.
-    for (auto& p : cv.px) p = 0x01000000;
-    if (g_hover) {
-        int inset = Px(4), r = Px(4);
-        Rgb hc = g_light ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 };
-        int ha = g_light ? 20 : 26;
-        for (int y = inset; y < H - inset; y++)
-            for (int x = 0; x < W; x++) {
-                int dx = x < r ? r - x : (x >= W - r ? x - (W - r - 1) : 0);
-                int dy = y < inset + r ? inset + r - y : (y >= H - inset - r ? y - (H - inset - r - 1) : 0);
-                if (dx * dx + dy * dy <= r * r) cv.Blend(x, y, hc, ha);
-            }
+    const int glyphSize = std::min(Px(19), RingDiameter(H) * 5 / 9);
+    HFONT icons = MakeFont(glyphSize, FW_NORMAL, L"Segoe Fluent Icons", L"Segoe MDL2 Assets");
+    if (g_items.empty()) {
+        WidgetItem empty;
+        empty.dim = true;
+        DrawBadge(cv, 0, RenderGlyph(kBatteryUnknown, icons, H), empty, g_hoveredItem == 0);
     }
-
-    int x = Px(8);
-    for (auto& p : pieces) {
-        cv.Draw(p.m, x, (H - p.m.h) / 2, p.color, p.alpha);
-        x += p.m.w + p.gapAfter;
+    for (size_t i = 0; i < g_items.size(); ++i) {
+        const auto& item = g_items[i];
+        DrawBadge(cv, (int)i * H, RenderGlyph(Glyph(item.kind, item.bluetooth), icons, H), item, g_hoveredItem == (int)i);
     }
+    if (icons) DeleteObject(icons);
 
     HDC screen = GetDC(nullptr);
     HDC mem = CreateCompatibleDC(screen);
@@ -186,11 +176,16 @@ void Paint() {
     HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     memcpy(bits, cv.px.data(), (size_t)W * H * 4);
     HGDIOBJ ob = SelectObject(mem, bmp);
-    g_size = { W, H };
     SIZE sz{ W, H };
     POINT src{ 0, 0 };
+    RECT tray{}, taskbar{};
+    HWND trayWindow = FindWindowExW(g_taskbar, nullptr, L"TrayNotifyWnd", nullptr);
+    const bool havePosition = trayWindow && GetWindowRect(trayWindow, &tray) && GetWindowRect(g_taskbar, &taskbar);
+    POINT position{tray.left - W - Px(4), taskbar.top + (taskbar.bottom - taskbar.top - H) / 2};
     BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(g_wnd, screen, nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA);
+    // Publish the right-anchored bounds and the new strip together.
+    if (UpdateLayeredWindow(g_wnd, screen, havePosition ? &position : nullptr, &sz, mem, &src, 0, &bf, ULW_ALPHA))
+        g_size = sz;
     SelectObject(mem, ob);
     DeleteObject(bmp);
     DeleteDC(mem);
@@ -200,17 +195,21 @@ void Paint() {
 
 LRESULT CALLBACK WidgetProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
-        case WM_MOUSEMOVE:
-            if (!g_hover) {
-                g_hover = true;
-                TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
-                TrackMouseEvent(&t);
+        case WM_MOUSEMOVE: {
+            const int index = std::max(0, GET_X_LPARAM(lp)) / std::max(1L, g_size.cy);
+            if (index != g_hoveredItem) {
+                if (g_hoveredItem < 0) {
+                    TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 };
+                    TrackMouseEvent(&t);
+                }
+                g_hoveredItem = index;
                 Paint();
                 widget::Reposition();
             }
             return 0;
+        }
         case WM_MOUSELEAVE:
-            g_hover = false;
+            g_hoveredItem = -1;
             Paint();
             widget::Reposition();
             return 0;
@@ -289,7 +288,7 @@ void Destroy() {
     if (g_tip) { DestroyWindow(g_tip); g_tip = nullptr; }
     if (g_wnd) { DestroyWindow(g_wnd); g_wnd = nullptr; }
     g_taskbar = nullptr;
-    g_hover = false;
+    g_hoveredItem = -1;
 }
 
 bool Alive() { return g_wnd && IsWindow(g_wnd) && g_taskbar && IsWindow(g_taskbar); }
@@ -315,15 +314,20 @@ void SetLightTheme(bool light) {
 
 bool Reposition() {
     if (!Alive()) return false;
-    if (Dpi() != g_lastDpi) { g_lastDpi = Dpi(); Paint(); }
     HWND tray = FindWindowExW(g_taskbar, nullptr, L"TrayNotifyWnd", nullptr);
     if (!tray) return true;
-    RECT tr, bar;
-    GetWindowRect(tray, &tr);
-    GetWindowRect(g_taskbar, &bar);
+    RECT tr{}, bar{};
+    if (!GetWindowRect(tray, &tr) || !GetWindowRect(g_taskbar, &bar)) return true;
+    const int dpi = Dpi();
+    if (dpi != g_lastDpi || CellSize(bar.bottom - bar.top) != g_size.cy) {
+        g_lastDpi = dpi;
+        Paint();
+    }
     POINT p{ tr.left, bar.top };
     ScreenToClient(g_taskbar, &p);
-    int left = p.x - g_size.cx - Px(2);
+    // Reserve the tray-side slot for the battery strip. Volume Mixer treats this child as occupied.
+    int left = p.x - g_size.cx - Px(4);
+    int top = p.y + (bar.bottom - bar.top - g_size.cy) / 2;
 
     // Windows 10: Explorer re-expands the task buttons on its own layout passes; narrow them again.
     if (g_rebar && IsWindow(g_rebar)) {
@@ -338,10 +342,11 @@ bool Reposition() {
     // Keep us above the taskbar's own content (our sibling windows).
     bool covered = GetWindow(g_wnd, GW_HWNDPREV) != nullptr;
     if (!covered && EqualRect(&tr, &g_lastTray) && EqualRect(&bar, &g_lastBar) && g_lastW == g_size.cx) return true;
-    g_lastTray = tr;
-    g_lastBar = bar;
-    g_lastW = g_size.cx;
-    SetWindowPos(g_wnd, HWND_TOP, left, 0, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (SetWindowPos(g_wnd, HWND_TOP, left, top, g_size.cx, g_size.cy, SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+        g_lastTray = tr;
+        g_lastBar = bar;
+        g_lastW = g_size.cx;
+    }
     return true;
 }
 

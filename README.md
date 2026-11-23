@@ -1,23 +1,20 @@
-# Wireless Battery
+# Wireless Battery Rings
 
-Battery levels of your wireless mouse, headset, keyboard and controller, right on the Windows taskbar.
+A Windows taskbar battery monitor for wireless mice, headsets, keyboards and controllers.
 
-![Wireless Battery on the taskbar](docs/screenshot.png)
+Wireless Battery Rings is an unofficial fork of **Wireless Battery** by [krisgfx9](https://github.com/krisgfx9) and the original contributors. It is based on upstream **v1.0.4**, commit `f2f075e`, recovered from the [notjiccu mirror](https://github.com/notjiccu/wireless-device-battery-monitor/tree/v1.0.4). The original author and contributor credits are preserved in the Git history and below.
 
-> **Just want it working?** Download **[WirelessBattery-Setup](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest)** from the latest release, run it and click through. That's it.
->
-> **Experienced users** can grab the portable zip, use the [command-line options](#command-line), or [build it from source](#build) with `make` or `build.bat`.
+Modified in this fork on **2026-11-23**. The Windows taskbar widget shows a charge ring around each device icon. The strip stays anchored beside the notification area as its width changes. This version also includes an MSVC build option.
 
-- **Tiny**: a ~350 KB app using about 2 MB of RAM. It's plain C++/Win32, with no runtime and no background service, and installs in seconds without admin rights.
-- **No vendor software needed**: it talks to the devices directly. G HUB, Synapse, iCUE, GG and NGenuity can stay closed (or keep running; they don't conflict).
-- **Many brands**: Logitech, Razer, SteelSeries, Corsair, HyperX, Glorious, PlayStation and Xbox controllers, any Bluetooth device Windows knows a battery level for, and every headset the bundled [HeadsetControl](https://github.com/Sapd/HeadsetControl) supports.
+Download the Windows x64 portable ZIP from [Releases](https://github.com/artnway/WirelessBatteryRings/releases).
+
 
 ## Display
 
-**On the taskbar (default):** `🎧 30%  🖱 93%` next to the notification area, drawn with the Windows icon font.
-- **Low battery:** a red number means 15% or less.
-- **Charging:** a blue ⚡ appears next to the number.
-- **Asleep:** dimmed text means the device is asleep and the last known value is shown.
+**On the taskbar (default):** a ring around each device icon shows its charge. Hover to see the exact level and charging or last-known status.
+- **Low battery:** the ring turns red at 15% or less.
+- **Charging:** the ring turns blue.
+- **Asleep:** the icon and ring are dimmed. The tooltip shows the last known level when available.
 - **Theme:** it follows light/dark mode and DPI scaling.
 
 **Tray icons:** one icon per device with the number drawn in it, plus a "Low battery" notification at 15%. The app switches to this automatically when the taskbar is vertical or can't be found.
@@ -55,23 +52,14 @@ Hover for details. Click for the menu: every device (click one to hide or show i
 | **HeadsetControl** | [Every headset it supports](https://github.com/Sapd/HeadsetControl#supported-headsets) (Audeze, Jabra, Sony INZONE, newer Logitech and more) | Bundled; runs `headsetcontrol -o json` |
 
 **Tested on real hardware:** Glorious Model O Wireless, HyperX Cloud III Wireless, Cooler Master MM712 (dongle) and Rapoo VT3 Max Gen 2 (receiver `24AE:1417` and USB cable `24AE:4617`; other Rapoo models are untested, see [Rapoo protocol notes](docs/rapoo.md)).
-**Implemented from protocol documentation and other projects, not yet tested:** everything else. If you own one of these devices, please report whether it works by [opening an issue](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/issues).
+**Implemented from protocol documentation and other projects, not yet tested:** everything else. If you own one of these devices, please report whether it works by [opening an issue](https://github.com/artnway/WirelessBatteryRings/issues).
 
-## Install
+## Use the portable release
 
-[![Latest version](https://img.shields.io/github/v/release/krisgfx9/Wireless-Device-Battery-Monitor?label=latest%20version&style=for-the-badge)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest)
+1. Download `WirelessBatteryRings-1.0.0-windows-x64-portable.zip` from [Releases](https://github.com/artnway/WirelessBatteryRings/releases).
+2. Extract the archive and run `WirelessBattery.exe`. If Wireless Battery is already running, exit that instance first.
+3. Keep the bundled `headsetcontrol.exe` beside the app for compatible headsets. Its exact corresponding source is attached to the same release.
 
-1. Download **`WirelessBattery-Setup-<version>.exe`** from the [latest release](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest).
-2. Run it and click through. It needs **no administrator rights** and **nothing else installed**: no
-   runtimes, no drivers, no vendor apps. HeadsetControl comes bundled.
-
-The installer adds a Start menu entry and an uninstaller (*Settings → Apps*), and can start the app
-when you sign in. Prefer no installer? Download `WirelessBattery-<version>-portable.zip`, unzip it
-anywhere and run `WirelessBattery.exe`.
-
-**Notes:**
-- **SmartScreen warning:** the exe is not code-signed, so Windows may say "Windows protected your PC". Click *More info → Run anyway*, or build it yourself.
-- **Tray-icon mode on Windows 11:** new tray icons go to the `^` overflow. Drag them onto the taskbar or enable them in *Settings → Personalization → Taskbar → Other system tray icons*.
 
 ## Command line
 
@@ -88,6 +76,7 @@ You need [MinGW-w64](https://www.mingw-w64.org/), e.g. from [MSYS2](https://www.
 ```
 make            # MSYS2 / any shell with make
 build.bat       # plain cmd with g++ and windres on PATH
+build-msvc.bat  # Visual Studio x64 Developer Command Prompt; output: build\WirelessBattery.exe
 ```
 
 To build the installer and portable zip, install [Inno Setup](https://jrsoftware.org/isinfo.php) and run

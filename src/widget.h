@@ -1,6 +1,6 @@
 #pragma once
 // A small transparent strip on the taskbar, just left of the notification area, showing
-// "[icon] 30%  [icon] 93%". Implemented as a layered child window of the taskbar (Shell_TrayWnd).
+// device icons with charge rings. Implemented as a layered child window of Shell_TrayWnd.
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -9,7 +9,6 @@
 struct WidgetItem {
     DeviceKind kind = DeviceKind::Other;
     int  percent  = -1;     // -1 = unknown
-    std::wstring text;      // shown instead of the percentage when set (coarse levels like "Low")
     bool charging = false;
     bool dim      = false;  // asleep / stale value
     bool low      = false;
